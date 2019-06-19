@@ -1,5 +1,5 @@
-from pyomo.contrib import kriging as krg
-from pyomo.contrib.sampling import sampling as sp
+from pyomo.contrib.surrogates import kriging as krg
+from pyomo.contrib.surrogates import sampling as sp
 from pyomo.common.fileutils import PYOMO_ROOT_DIR
 import pandas as pd
 import numpy as np
@@ -7,41 +7,47 @@ import os
 from matplotlib import pyplot as plt
 from mpl_toolkits import mplot3d
 
-os.path.join(PYOMO_ROOT_DIR, 'contrib', 'surrogates', 'examples', 'data_files')
+data_dir = os.path.join(
+    PYOMO_ROOT_DIR, 'pyomo', 'contrib', 'surrogates', 'examples', 'data_files')
 
 
+data = pd.read_csv(os.path.join(data_dir,'six_hump_data_2400.txt'),
+                   sep='\s+', header=None, index_col=None)
+sd = sp.FeatureScaling()
+data_scaled_x, data_min, data_max = sd.data_scaling_minmax(data.values[:, :-1])
+y_r = data.values[:, -1]
+data_scaled = np.concatenate(
+    (data_scaled_x, y_r.reshape(y_r.shape[0], 1)), axis=1)
+no_training_samples = 100
+b = sp.HammersleySampling(data_scaled, no_training_samples)
+training_data = b.sample_points()
 
-# data = pd.read_csv('six_hump_data_2400.txt', sep='\s+', header=None, index_col=None)
-# sd = sp.FeatureScaling()
-# data_scaled_x, data_min, data_max = sd.data_scaling_minmax(data.values[:, :-1])
-# y_r = data.values[:, -1]
-# data_scaled = np.concatenate((data_scaled_x, y_r.reshape(y_r.shape[0], 1)), axis=1)
-# no_training_samples = 100
-# b = sp.HammersleySampling(data_scaled, no_training_samples)
-# training_data = b.hs_sample_points()
-#
-# # Kriging training
-# aa = krg.KrigingModel(training_data)
-# ab = aa.kriging_training()
-# print()
-#
-# # Kriging testing
-# x_pred = data_scaled[:, :-1]
-# y_pred = aa.kriging_predict_output(ab, x_pred)
-# r2 = aa.r2_calculation(data_scaled[:, -1], y_pred)
-#
-# difference_vector = data_scaled[:, 2] - y_pred[:, 0]
-# x1 = np.linspace(-3, 3, 61)
-# x2 = np.linspace(-2, 2, 41)
-# X1, X2 = np.meshgrid(x1, x2, indexing='ij')  # ij indicates matrix arrangement which is what we have
-# Y = difference_vector.reshape(61, 41)
-# ax = plt.axes(projection='3d')
-# ax.plot_surface(X1, X2, Y, cmap='viridis', edgecolor='none')
-# # ax.scatter3D(training_data[:, 0], training_data[:, 1], training_data[:, 2]-y_training_pred[:, 0], c='r', marker='^', s=200, depthshade=False)
-# ax.set_xlabel('x1')
-# ax.set_ylabel('x2')
-# ax.set_zlabel('Error')
-# plt.show()
+# Kriging training
+aa = krg.KrigingModel(training_data)
+ab = aa.kriging_training()
+print()
+
+# Kriging testing
+x_pred = data_scaled[:, :-1]
+y_pred = aa.kriging_predict_output(ab, x_pred)
+r2 = aa.r2_calculation(data_scaled[:, -1], y_pred)
+
+difference_vector = data_scaled[:, 2] - y_pred[:, 0]
+x1 = np.linspace(-3, 3, 61)
+x2 = np.linspace(-2, 2, 41)
+X1, X2 = np.meshgrid(x1, x2, indexing='ij')  # ij indicates matrix
+                                             # arrangement which is what
+                                             # we have
+Y = difference_vector.reshape(61, 41)
+ax = plt.axes(projection='3d')
+ax.plot_surface(X1, X2, Y, cmap='viridis', edgecolor='none')
+# ax.scatter3D(training_data[:, 0], training_data[:, 1],
+#              training_data[:, 2]-y_training_pred[:, 0],
+#              c='r', marker='^', s=200, depthshade=False)
+ax.set_xlabel('x1')
+ax.set_ylabel('x2')
+ax.set_zlabel('Error')
+plt.show()
 
 # =====================================================================================================================
 

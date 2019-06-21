@@ -1,22 +1,25 @@
-from __future__ import division, print_function
-from future.utils import string_types
+from __future__ import division
+
+from six import string_types
 
 import random
 import warnings
-from builtins import int, str
+#from builtins import int, str
 
 import numpy as np
 import pandas as pd
 import scipy.optimize as opt
 from matplotlib import pyplot as plt
 from pyomo.environ import *
+from pyomo.core.expr.visitor import replace_expressions
 from scipy.special import comb as comb
+from .utils import NumpyEvaluator
 
 """
 The purpose of this file is to perform polynomial regression in Pyomo.
 This will be done in two stages. First, lattice hypercube sampling  (LHS) will
-be done to select random samples for generating a surrogate model. 
-In the second stage, the surrogate model is constructed by fitting to 
+be done to select random samples for generating a surrogate model.
+In the second stage, the surrogate model is constructed by fitting to
 different order polynomials. Iterative adaptive sampling is incorporated to improve the model.
 Cross-validation will be done to select the best model at each stage of the iterative process.
 
@@ -26,7 +29,7 @@ Simple script for scaling and un-scaling the input data
 
 Polynomial Regression:
 Initial regression is done with the samples generated from LHS, folloewed by adaptive sampling to improve the solution.
-Two approaches are implemented for evaluating coefficients - 
+Two approaches are implemented for evaluating coefficients -
 a. Moore-Penrose maximum likelihood method (Forrester et al.)
 b. Optimization using the BFGS algorithm.
 However, only one approach is enabled at this time.
@@ -52,9 +55,14 @@ class ResultReport:
             self.fit_status = Judgement of performance of algorithm on inputted dataset based on final R-squared value. Returns 'ok' when R2>0.95, 'poor' when it is not.
     """
 
-    def __init__(self, optimal_weight_vector, polynomial_order, mae_error, mse_error, R2, adjusted_R2, number_of_iterations, results_vector, additional_features_array, final_regression_data, df_coefficients, extra_terms_coeffs):
+    def __init__(self, optimal_weight_vector, polynomial_order, multinomials,
+                 mae_error, mse_error, R2, adjusted_R2, number_of_iterations,
+                 results_vector, additional_features_array,
+                 final_regression_data, df_coefficients, extra_terms_coeffs,
+                 extra_terms_feature_vector, extra_terms_expressions):
         self.optimal_weights_array = optimal_weight_vector
         self.polynomial_order = polynomial_order
+        self.multinomials = multinomials
         self.errors = {'MAE': mae_error, 'MSE': mse_error, 'R2':R2, 'Adjusted R2': adjusted_R2}
         self.number_of_iterations = number_of_iterations
         self.iteration_summary = results_vector
@@ -62,11 +70,34 @@ class ResultReport:
         self.final_training_data = final_regression_data
         self.dataframe_of_optimal_weights_polynomial = df_coefficients
         self.dataframe_of_optimal_weights_extra_terms = extra_terms_coeffs
+        self.extra_terms_feature_vector = extra_terms_feature_vector
+        self.extra_terms_expressions = extra_terms_expressions
+
         if R2 > 0.95:
             self.fit_status = 'ok'
         else:
             warnings.warn('Polynomial regression generates poor fit for the dataset')
             self.fit_status = 'poor'
+
+    def generate_expression(self, variable_list):
+        terms = PolynomialRegression.polygeneration(
+            self.polynomial_order, self.multinomials, np.array([variable_list])
+        ).transpose()
+        n = len(terms)
+
+        ans = sum(w*t for w,t in zip(
+            np.nditer(self.optimal_weights_array),
+            np.nditer(terms, flags=['refs_ok'])
+        ))
+
+        user_term_map = dict((id(a), b) for a,b in zip(
+            self.extra_terms_feature_vector,
+            variable_list,
+        ))
+        for w,expr in zip(np.nditer(self.optimal_weights_array[n:]),
+                          self.extra_terms_expressions):#, flags=['refs_ok'])):
+            ans += float(w) * replace_expressions(expr, user_term_map)
+        return ans
 
 
 class FeatureScaling:
@@ -244,8 +275,11 @@ class PolynomialRegression:
 
         if isinstance(original_data_input, pd.DataFrame):
             original_data = original_data_input.values
+            # FIXME: if we add an option to specify the response column, this needs to change
+            self.regression_data_columns = list(original_data_input.columns)[:-1]
         elif isinstance(original_data_input, np.ndarray):
             original_data = original_data_input
+            self.regression_data_columns = list(range(original_data_input.shape[1]))
         else:
             raise ValueError('original_data_input: Pandas dataframe or numpy array required.')
 
@@ -346,6 +380,9 @@ class PolynomialRegression:
         else:
             raise Exception('Multinomial must be binary: input "1" for "Yes" and "0" for "No". ')
 
+        self.feature_list = []
+        self.additional_term_expressions = []
+
     def training_test_data_creation(self, additional_features=None):
 
         """
@@ -397,7 +434,8 @@ class PolynomialRegression:
                 cross_val_data["test_extras_" + str(i)] = A[num_training:, self.regression_data.shape[1]:]
         return training_data, cross_val_data
 
-    def polygeneration(self, polynomial_order, x_input_train_data, additional_x_training_data=None):
+    @classmethod
+    def polygeneration(self, polynomial_order, multinomials, x_input_train_data, additional_x_training_data=None):
         """
         ===============================================================================================================
         This function generates a x-variable vector for the required polynomial order. This is done in four stages:
@@ -423,26 +461,20 @@ class PolynomialRegression:
                         x_train_data = [1, x1, x2, x3, x1^2, x2^2, x3^2, x1.x2, x1.x3, x2.x3, sin(x1), tanh(x3)]
          ===============================================================================================================
         """
+        N = x_input_train_data.shape[0]
         x_train_data = x_input_train_data
         # Generate the constant and pure power terms
         for i in range(2, polynomial_order + 1):
             x_train_data = np.concatenate((x_train_data, x_input_train_data ** i), axis=1)
 
-        if self.multinomials == 1:
+        if multinomials == 1:
             # Next, generate first order multinomials
-            no_cross_terms = np.int(comb(x_input_train_data.shape[1], 2))  # Calculates number of possible combinations
-            combination_vector = np.zeros((x_input_train_data.shape[0], no_cross_terms))
-            iter_no = 0
             for i in range(0, x_input_train_data.shape[1]):
-                for j in range(0, x_input_train_data.shape[1]):
-                    if i > j:
-                        combination_vector[:, iter_no] = x_input_train_data[:, i] * x_input_train_data[:, j]
-                        iter_no += 1
+                for j in range(0, i):
+                    x_train_data = np.concatenate((x_train_data, (x_input_train_data[:, i] * x_input_train_data[:, j]).reshape(N,1)), axis=1)
 
-            # Concatenate to generate full dataset.
-            x_train_data = np.concatenate((np.ones((x_train_data.shape[0], 1)), x_train_data, combination_vector), axis=1)
-        elif self.multinomials == 0:
-            x_train_data = np.concatenate((np.ones((x_train_data.shape[0], 1)), x_train_data), axis=1)
+        # Concatenate to generate full dataset.
+        x_train_data = np.concatenate((np.ones((N, 1)), x_train_data), axis=1)
 
         # Add additional features if they have been provided:
         if additional_x_training_data is not None:
@@ -672,7 +704,7 @@ class PolynomialRegression:
         y_training_data = training_data[:, -1]
         x_test_data = test_data[:, :-1]
         y_test_data = test_data[:, -1]
-        x_polynomial_data = self.polygeneration(poly_order, x_training_data, additional_x_training_data)
+        x_polynomial_data = self.polygeneration(poly_order, self.multinomials, x_training_data, additional_x_training_data)
 
         # Check that the problem has more samples than features - necessary for fitting. If not, return Infinity.
         if x_polynomial_data.shape[0] >= x_polynomial_data.shape[1]:
@@ -684,7 +716,7 @@ class PolynomialRegression:
                 phi_vector = self.pyomo_optimization(x_polynomial_data, y_training_data)
             phi_vector = phi_vector.reshape(phi_vector.shape[0], 1)  # Pseudo-inverse approach
 
-            x_polynomial_data_test = self.polygeneration(poly_order, x_test_data, additional_x_test_data)
+            x_polynomial_data_test = self.polygeneration(poly_order, self.multinomials, x_test_data, additional_x_test_data)
             training_error = self.cross_validation_error_calculation(phi_vector, x_polynomial_data, y_training_data.reshape(y_training_data.shape[0], 1))
             crossval_error = self.cross_validation_error_calculation(phi_vector, x_polynomial_data_test, y_test_data.reshape(y_test_data.shape[0], 1))
 
@@ -716,7 +748,7 @@ class PolynomialRegression:
         comparison_vector[:, :self.original_data.shape[1]] = self.original_data[:, :]
 
         # Create x terms for the whole input data, and evaluate the predicted y's as phi.X.
-        x_evaluation_data = self.polygeneration(order_best, self.original_data[:, 0:self.original_data.shape[1] - 1], additional_features_array)
+        x_evaluation_data = self.polygeneration(order_best, self.multinomials, self.original_data[:, 0:self.original_data.shape[1] - 1], additional_features_array)
         y_prediction = np.matmul(x_evaluation_data, phi_best)
         y_prediction = y_prediction.reshape(y_prediction.shape[0], 1)
         comparison_vector[:, self.original_data.shape[1]] = y_prediction[:, 0]
@@ -996,7 +1028,15 @@ class PolynomialRegression:
 
             vector_of_results_df = pd.DataFrame({'Iteration_number': vector_of_results[:, 0], 'Polynomial order': vector_of_results[:, 1], 'Training error': vector_of_results[:, 2], 'Cross-val error': vector_of_results[:, 3], 'MAE': vector_of_results[:, 4], 'MSE': vector_of_results[:, 5], 'R2': vector_of_results[:, 6], 'Adjusted R2': vector_of_results[:, 7], 'Number of training samples': vector_of_results[:, 8]})
 
-            results = ResultReport(phi_opt, order_opt, mae_error_opt, mse_error_opt, r_square_opt, r_square_adj_opt, iteration_number, vector_of_results_df, None, self.regression_data, dataframe_coeffs, [])
+            extra_terms_feature_vector = list(self.feature_list[i] for i in self.regression_data_columns)
+
+            results = ResultReport(
+                phi_opt, order_opt, self.multinomials, mae_error_opt,
+                mse_error_opt, r_square_opt, r_square_adj_opt,
+                iteration_number, vector_of_results_df, None,
+                self.regression_data, dataframe_coeffs, [],
+                extra_terms_feature_vector,
+                self.additional_term_expressions)
             return results
 
         else:
@@ -1037,5 +1077,31 @@ class PolynomialRegression:
             print('\nRegression model performance on training data:\nOrder: ', order_best, ' / MAE: %4f' % mae_error,
                   ' / MSE: %4f' % mse_error, ' / R^2: %4f' % r_square)
 
-            results = ResultReport(phi_best, order_best, mae_error, mse_error, r_square, [], [], [], additional_features_array, self.regression_data, dataframe_coeffs, extra_terms_coeffs)
+            extra_terms_feature_vector = list(self.feature_list[i] for i in self.regression_data_columns)
+
+            results = ResultReport(
+                phi_best, order_best, self.multinomials, mae_error, mse_error,
+                r_square, [], [], [], additional_features_array,
+                self.regression_data, dataframe_coeffs, extra_terms_coeffs,
+                extra_terms_feature_vector, self.additional_term_expressions)
             return results
+
+    def get_feature_vector(self):
+        p = Param(self.regression_data_columns, mutable=True, initialize=0)
+        p.index_set().construct()
+        p.construct()
+        self.feature_list = p
+        return p
+
+    def set_additional_terms(self, term_list):
+        self.additional_term_expressions = term_list
+
+    def fit_surrogate(self):
+        cMap = ComponentMap()
+        for i,col in enumerate(self.regression_data_columns):
+            cMap[self.feature_list[col]] = self.regression_data[:,i]
+        npe = NumpyEvaluator(cMap)
+        additional_data = list(
+            npe.walk_expression(term) for term in self.additional_term_expressions
+        )
+        return self.polynomial_regression_fitting(additional_data)

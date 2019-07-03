@@ -38,7 +38,7 @@ class ResultReport:
     ===================================================================================================================
     """
 
-    def __init__(self, radial_weights, best_r_value, best_lambda_param, centres, y_training_predictions, rmse_error, x_condition_number, reg_setting, r_square):
+    def __init__(self, radial_weights, best_r_value, best_lambda_param, centres, y_training_predictions, rmse_error, x_condition_number, reg_setting, r_square, basis_function):
         self.weights = radial_weights
         self.sigma = best_r_value
         self.regularization = reg_setting
@@ -48,11 +48,49 @@ class ResultReport:
         self.output_predictions = y_training_predictions
         self.condition_number = x_condition_number
         self.R2 = r_square
+        self.basis_function = basis_function
         if x_condition_number < (1 / np.finfo(float).eps):
             self.solution_status = 'ok'
         else:
             warnings.warn('The parameter matrix A in A.x=B is ill-conditioned (condition number > 1e10). The solution returned may be inaccurate or unstable - inspect rmse error. Regularization (if not already done) may improve solution')
             self.solution_status = 'unstable solution'
+
+    def rbf_generate_expression(self, variable_list):
+        t1 = np.array([variable_list])
+        basis_vector = []
+        # Calculate distances from centres
+        for i in range(0, self.centres.shape[0]):
+            ans = 0
+            for j in range(0, self.centres.shape[1]):
+                ans += (t1[0, j] - self.centres[i, j]) ** 2
+            eucl_d = ans ** 0.5
+            basis_vector.append(eucl_d)
+        rbf_terms_list = []
+        if self.basis_function == 'linear':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append(RadialBasisFunctions.linear_transformation(basis_vector[k]))
+        elif self.basis_function == 'cubic':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append(RadialBasisFunctions.cubic_transformation(basis_vector[k]))
+        elif self.basis_function == 'gaussian':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append(exp(-1 * ((self.sigma * basis_vector[k]) ** 2)))
+        elif self.basis_function == 'mq':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append((((basis_vector[k] * self.sigma) ** 2) + 1) ** 0.5)
+        elif self.basis_function == 'imq':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append(1 / ((((basis_vector[k] * self.sigma) ** 2) + 1) ** 0.5))
+        elif self.basis_function == 'spline':
+            for k in range(0, len(basis_vector)):
+                rbf_terms_list.append(((basis_vector[k] ** 2) * log(basis_vector[k])))
+
+        rbf_terms_array = np.asarray(rbf_terms_list)
+        rbf_expr = sum(w * t for w, t in zip(
+            np.nditer(self.weights),
+            np.nditer(rbf_terms_array, flags=['refs_ok'])
+        ))
+        return rbf_expr
 
 
 class FeatureScaling:
@@ -83,8 +121,10 @@ class FeatureScaling:
         # Confirm that data type is an array or DataFrame
         if isinstance(data, np.ndarray):
             input_data = data
+            data_headers = []
         elif isinstance(data, pd.DataFrame):
             input_data = data.values
+            data_headers = data.columns.values.tolist()
         else:
             raise TypeError('original_data_input: Pandas dataframe or numpy array required.')
 
@@ -95,6 +135,9 @@ class FeatureScaling:
         scaled_data = (input_data - data_minimum)/(data_maximum - data_minimum)
         data_minimum = data_minimum.reshape(1, data_minimum.shape[0])
         data_maximum = data_maximum.reshape(1, data_maximum.shape[0])
+
+        if len(data_headers) > 0:
+            scaled_data = pd.DataFrame(scaled_data, columns=data_headers)
         return scaled_data, data_minimum, data_maximum
 
     @staticmethod
@@ -234,8 +277,10 @@ class RadialBasisFunctions:
         # Check data types and shapes
         if isinstance(XY_data, pd.DataFrame):
             xy_data = XY_data.values
+            self.x_data_columns = list(XY_data.columns)[:-1]
         elif isinstance(XY_data, np.ndarray):
             xy_data = XY_data
+            self.x_data_columns = list(range(XY_data.shape[1] - 1))
         else:
             raise ValueError('Pandas dataframe or numpy array required for "XY_data".')
 
@@ -883,7 +928,7 @@ class RadialBasisFunctions:
 
         training_ss_error, rmse_error, y_training_predictions = self.error_calculation(radial_weights, x_transformed, self.y_data)
         r_square = self.r2_calculation(self.y_data, y_training_predictions)
-        results = ResultReport(radial_weights, best_r_value, best_lambda_param, self.centres, y_training_predictions, rmse_error, x_condition_number, self.regularization, r_square)
+        results = ResultReport(radial_weights, best_r_value, best_lambda_param, self.centres, y_training_predictions, rmse_error, x_condition_number, self.regularization, r_square, self.basis_function)
         return results
 
     def rbf_predict_output(self, radial_weights, x_data, centres_matrix, r, lambda_reg):
@@ -933,3 +978,10 @@ class RadialBasisFunctions:
         y_prediction = np.matmul(x_transformed, radial_weights)
 
         return y_prediction
+
+    def get_feature_vector(self):
+        p = Param(self.x_data_columns, mutable=True, initialize=0)
+        p.index_set().construct()
+        p.construct()
+        self.feature_list = p
+        return p

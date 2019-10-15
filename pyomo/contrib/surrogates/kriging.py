@@ -76,7 +76,7 @@ class MyBounds(object):
 
 class KrigingModel:
 
-    def __init__(self, XY_data, numerical_gradients=None):
+    def __init__(self, XY_data, numerical_gradients=True, regularization=True):
 
         # Check data types and shapes
         if isinstance(XY_data, pd.DataFrame):
@@ -93,12 +93,16 @@ class KrigingModel:
         self.num_vars = self.x_data.shape[1] + 1  # thetas and reg parameter only
         x_data_scaled, self.x_data_min, self.x_data_max = fs.data_scaling_minmax(self.x_data)
         self.x_data_scaled = x_data_scaled.reshape(self.x_data.shape)
-        if numerical_gradients is None:
-            self.num_grads = True
-        elif numerical_gradients is True or numerical_gradients is False:
+
+        if isinstance(regularization, bool):
             self.num_grads = numerical_gradients
         else:
             raise Exception('numerical_gradients must be boolean.')
+
+        if isinstance(regularization, bool):
+            self.regularization = regularization
+        else:
+            raise Exception('Choice of regularization must be boolean.')
 
 
     @staticmethod
@@ -173,6 +177,8 @@ class KrigingModel:
             of_minus = self.objective_function(var_vector_minus, x, y, p)
             grad_current = (of_plus - of_minus) / (2 * eps)
             grad_vec[i, ] = grad_current
+        if self.regularization is False:
+            grad_vec[-1, ] = 0
         return grad_vec
 
     def parameter_optimization(self, p):
@@ -188,7 +194,10 @@ class KrigingModel:
         bounds = []
         for i in range(0, len(initial_value_list)):
             if i == len(initial_value_list) - 1:
-                bounds.append((1e-6, 0.1))
+                if self.regularization is True:
+                    bounds.append((1e-6, 0.1))
+                else:
+                    bounds.append((1e-10, 1e-10))
             else:
                 bounds.append((-3, 3))
         bounds = tuple(bounds)

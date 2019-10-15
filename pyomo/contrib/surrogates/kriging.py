@@ -91,10 +91,12 @@ class KrigingModel:
         self.x_data = xy_data[:, :-1].reshape(xy_data.shape[0], xy_data.shape[1]-1)
         self.y_data = xy_data[:, -1].reshape(xy_data.shape[0], 1)
         self.num_vars = self.x_data.shape[1] + 1  # thetas and reg parameter only
+        x_data_scaled, self.x_data_min, self.x_data_max = fs.data_scaling_minmax(self.x_data)
         self.x_data_scaled = x_data_scaled.reshape(self.x_data.shape)
         if numerical_gradients is None:
             self.num_grads = True
         elif numerical_gradients is True or numerical_gradients is False:
+            self.num_grads = numerical_gradients
         else:
             raise Exception('numerical_gradients must be boolean.')
 

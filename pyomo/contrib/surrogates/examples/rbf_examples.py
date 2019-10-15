@@ -34,7 +34,7 @@ p = f1.get_feature_vector()
 p.pprint()
 results_pyomo = f1.rbf_training()
 
-y_predicted_pyomo = f1.rbf_predict_output(results_pyomo.weights, data_scaled[:, :-1], results_pyomo.centres, results_pyomo.sigma, results_pyomo.regularization_parameter)
+y_predicted_pyomo = f1.rbf_predict_output(results_pyomo, data_scaled[:, :-1])
 r2_pyomo = f1.r2_calculation(data_scaled[:, -1], y_predicted_pyomo)
 
 list_vars = []
@@ -83,7 +83,7 @@ fig.colorbar(img2, ax=ax2)
 # p.pprint()
 # results_pyomo = f1.rbf_training()
 #
-# y_predicted_pyomo = f1.rbf_predict_output(results_pyomo.weights, data_scaled.values[:, :-1], results_pyomo.centres, results_pyomo.sigma, results_pyomo.regularization_parameter)
+# y_predicted_pyomo = f1.rbf_predict_output(results_pyomo, data_scaled.values[:, :-1])
 # r2_pyomo = f1.r2_calculation(data_scaled.values[:, -1], y_predicted_pyomo)
 #
 # list_vars = []
@@ -166,7 +166,7 @@ fig.colorbar(img2, ax=ax2)
 # # Test data
 # data = pd.read_csv(os.path.join(datadir, 'cardinal_sine_2500.txt'), sep='\s+', header=None, index_col=None)
 # data2_scaled = data2.values
-# y_predicted = f1.rbf_predict_output(results_pyomo.weights, data2_scaled[:, :-1], results_pyomo.centres, results_pyomo.sigma, results_pyomo.regularization_parameter)
+# y_predicted = f1.rbf_predict_output(results_pyomo, data2_scaled[:, :-1])
 # r2_pyomo = f1.r2_calculation(data2_scaled[:, -1], y_predicted)
 #
 # # Plots

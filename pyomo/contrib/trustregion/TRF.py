@@ -20,10 +20,10 @@ def TRF(m, eflist, config):
     eflist is a list of ExternalFunction objects that should be
     treated with the trust region
 
-    config is the persistent set of variables defined 
+    config is the persistent set of variables defined
     in the ConfigBlock class object
 
-    Return: 
+    Return:
     model is solved, variables are at optimal solution or
     other exit condition.  model is left in reformulated form, with
     some new variables introduced in a block named "tR" TODO: reverse
@@ -37,7 +37,7 @@ def TRF(m, eflist, config):
 
     iteration = -1
 
-    romParam, yr = problem.buildROM(x, config.sample_radius)
+    romParam, surrogate_objective, surrogate_constraints, yr = problem.buildROM(x, config.sample_radius)
     #y = yr
     rebuildROM = False
     xk, yk, zk = cloneXYZ(x, y, z)
@@ -58,7 +58,7 @@ def TRF(m, eflist, config):
 
         ######  Why is this here ###########
         if iteration == 1:
-            config.sample_region = False
+            config.sample_region = True
         ################################
 
         # Keep Sample Region within Trust Region
@@ -76,7 +76,7 @@ def TRF(m, eflist, config):
             else:
                 problem.romtype = config.reduced_model_type
 
-            romParam, yr = problem.buildROM(x, config.sample_radius)
+            romParam, surrogate_objective, surrogate_constraints, yr = problem.buildROM(x, config.sample_radius)
             #print(romParam)
             #print(config.sample_radius)
 
@@ -84,7 +84,7 @@ def TRF(m, eflist, config):
 
         # Criticality Check
         if iteration > 0:
-            flag, chik = problem.criticalityCheck(x, y, z, romParam)
+            flag, chik = problem.criticalityCheck(x, y, z, romParam, surrogate_constraints)
             if (not flag):
                 raise Exception("Criticality Check fails!\n")
 
@@ -138,7 +138,8 @@ def TRF(m, eflist, config):
         try:
             flag, obj = problem.compatibilityCheck(
                 x, y, z, xk, yk, zk, romParam, radius,
-                config.compatibility_penalty)
+                config.compatibility_penalty, surrogate_objective)
+            print('compcheck obj: ', obj)
         except:
             print("Compatibility check failed, unknown error")
             raise
@@ -146,11 +147,13 @@ def TRF(m, eflist, config):
         if not flag:
             raise Exception("Compatibility check fails!\n")
 
+        # theta_s = norm(ys - yk, 1)
 
         theNorm = norm(x - xk, 2)**2 + norm(z - zk, 2)**2
         if (obj - config.compatibility_penalty*theNorm >
             config.ep_compatibility):
             # Restoration stepNorm
+            # print(obj)
             yr = problem.evaluateDx(x)
             theta = norm(yr - y, 1)
 
@@ -162,6 +165,8 @@ def TRF(m, eflist, config):
             filteR.addToFilter(fe)
 
             rhok = 1 - ((theta - config.ep_i)/max(thetak, config.ep_i))
+            print('solution radius: ', radius, '\nxk: ', xk, 'x: ', x, '\nyreal: ', yr, 'ycalc: ', y, '\nthetak: ', thetak, ' | theta: ', theta, '\nrhok: ', rhok)
+
             if rhok < config.eta1:
                 config.trust_radius = max(config.gamma_c*config.trust_radius,
                                   config.delta_min)
@@ -178,23 +183,27 @@ def TRF(m, eflist, config):
 
             # Solve TRSP_k
             flag, obj = problem.TRSPk(x, y, z, xk, yk, zk,
-                                      romParam, config.trust_radius)
+                                      romParam, config.trust_radius, surrogate_constraints)
             if not flag:
                 raise Exception("TRSPk fails!\n")
 
             # Filter
+            print('TPSPk obj: ', obj)
             yr = problem.evaluateDx(x)
 
             stepNorm = norm(packXYZ(x-xk, y-yk, z-zk), inf)
             logger.setCurIter(stepNorm=stepNorm)
 
             theta = norm(yr - y, 1)
+            print('solution radius: ', radius, '\nxk: ', xk, 'x: ', x, '\nyreal: ', yr, 'ycalc: ', y, '\nthetak: ', thetak, ' | theta: ', theta)
             fe = FilterElement(obj, theta)
 
             if not filteR.checkAcceptable(fe, config.theta_max) and iteration > 0:
                 logger.iterlog.rejected = True
                 config.trust_radius = max(config.gamma_c*stepNorm,
                                   config.delta_min)
+
+                config.sample_radius = min(config.sample_radius, config.trust_radius * config.sample_radius_adjust)
                 rebuildROM = False
                 x, y, z = cloneXYZ(xk, yk, zk)
                 continue
@@ -228,6 +237,9 @@ def TRF(m, eflist, config):
                     config.trust_radius = min(
                         max(config.gamma_e*stepNorm, config.trust_radius),
                         config.radius_max)
+
+                config.sample_radius = min(config.sample_radius, config.trust_radius * config.sample_radius_adjust)
+                print('rhok: ', rhok)
 
         # Accept step
         rebuildROM = True

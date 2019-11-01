@@ -15,12 +15,23 @@ from pyomo.contrib.trustregion.GeometryGenerator import (
     generate_quadratic_rom_geometry
 )
 from pyomo.contrib.trustregion.helper import *
+import sys
+import io
+from pyomo.contrib.surrogates import sampling, polynomial_regression, kriging
+
+# To be deleted when git commit is done
+# mydir = 'C:\\Users\\OOAmusat\\PycharmProjects\\WorkProjects\\kriging'
+# newdir = os.path.abspath(os.path.join(mydir, '..'))
+# sys.path.append(newdir)
+# from kriging import kriging_hybrid as kriging
+#
 
 logger = logging.getLogger('pyomo.contrib.trustregion')
 
 class ROMType:
     linear = 0
     quadratic = 1
+    kriging = 2
 
 class ReplaceEFVisitor(EXPR.ExpressionReplacementVisitor):
     def __init__(self, trf_block, efSet):
@@ -114,8 +125,6 @@ class PyomoInterface(object):
         self.ly = len(self.TRF.y)
 
         self.createParam()
-        self.createRomConstraint()
-        self.createCompCheckObjective()
         self.cacheBound()
 
         self.geoM = None
@@ -244,55 +253,7 @@ class PyomoInterface(object):
         self.TRF.px0 = Param(self.TRF.ind_lx,mutable=True,default=0)
         self.TRF.py0 = Param(self.TRF.ind_ly,mutable=True,default=0)
         self.TRF.pz0 = Param(self.TRF.ind_lz,mutable=True,default=0)
-        self.TRF.plrom = Param(self.TRF.ind_ly,range(self.lx+1),mutable=True,default=0)
-        self.TRF.pqrom = Param(self.TRF.ind_ly,range(int((self.lx*self.lx+self.lx*3)/2. + 1)),mutable=True,default=0)
         self.TRF.ppenaltyComp = Param(mutable=True,default=0)
-
-
-    def ROMlinear(self,model,i):
-        ind = self.exfn_xvars_ind[i]
-        e1 = (model.plrom[i,0] + sum(model.plrom[i,j+1] * (model.xvars[ind[j]] - model.px0[ind[j]]) for j in range(0, len(ind))))
-        return e1
-
-    def ROMQuad(self,model,i):
-        e1 = model.pqrom[i,0] + sum(model.pqrom[i,j+1] * (model.xvars[j] - model.px0[j]) for j in range(0,self.lx))
-        count = self.lx+1
-        for j1 in range(self.lx):
-            for j2 in range(j1,self.lx):
-                e1 += (model.xvars[j2] - model.px0[j2]) * (model.xvars[j1] - model.px0[j1])*model.pqrom[i,count]
-                count = count + 1
-        return e1
-
-
-    def createRomConstraint(self):
-        def consROMl(model, i):
-            return  model.y[i+1] == self.ROMlinear(model,i)
-        self.TRF.romL = Constraint(self.TRF.ind_ly, rule=consROMl)
-
-        def consROMq(model, i):
-            return  model.y[i+1] == self.ROMQuad(model,i)
-        self.TRF.romQ = Constraint(self.TRF.ind_ly, rule=consROMq)
-
-    def createCompCheckObjective(self):
-        obj = 0
-        model = self.TRF
-        for i in range(0, self.ly):
-            obj += (self.ROMlinear(model, i) - model.y[i+1]) ** 2
-        # for i in range(0, self.lx):
-        #     obj += model.ppenaltyComp * (model.xvars[i] - model.px0[i]) ** 2
-        # for i in range(0, self.lz):
-        #     obj += model.ppenaltyComp * (model.zvars[i] - model.pz0[i]) ** 2
-        model.objCompCheckL = Objective(expr=obj)
-
-        obj = 0
-        for i in range(0, self.ly):
-            obj += (self.ROMQuad(model, i) - model.y[i+1]) ** 2
-        # for i in range(0, self.lx):
-        #     obj += model.ppenaltyComp * (model.xvars[i] - model.px0[i]) ** 2
-        # for i in range(0, self.lz):
-        #     obj += model.ppenaltyComp * (model.zvars[i] - model.pz0[i]) ** 2
-        model.objCompCheckQ = Objective(expr=obj)
-
 
     def cacheBound(self):
         self.TRF.xvarlo = []
@@ -306,7 +267,6 @@ class PyomoInterface(object):
             self.TRF.zvarlo.append(z.lb)
             self.TRF.zvarup.append(z.ub)
 
-
     def setParam(self,x0=None,y0=None,z0=None,rom_params=None, penaltyComp = None):
         if x0 is not None:
             for i in range(self.lx):
@@ -319,16 +279,6 @@ class PyomoInterface(object):
         # if z0 is not None:
         #     for i in range(self.lz):
         #         self.TRF.pz0[i] = z0[i]
-
-        if rom_params is not None:
-            if(self.romtype==ROMType.linear):
-                for i in range(self.ly):
-                    for j in range(len(rom_params[i])):
-                        self.TRF.plrom[i,j] = rom_params[i][j]
-            elif(self.romtype==ROMType.quadratic):
-                for i in range(self.ly):
-                    for j in range(len(rom_params[i])):
-                        self.TRF.pqrom[i,j] = rom_params[i][j]
 
         # if penaltyComp is not None:
         #     self.TRF.ppenaltyComp.set_value(penaltyComp)
@@ -365,7 +315,6 @@ class PyomoInterface(object):
             self.TRF.zvars[i].setlb(maxIgnoreNone(z0[i] - radius,self.TRF.zvarlo[i]))
             self.TRF.zvars[i].setub(minIgnoreNone(z0[i] + radius,self.TRF.zvarup[i]))
 
-
     def evaluateDx(self,x):
         # This is messy, currently redundant with
         # some lines in buildROM()
@@ -385,30 +334,6 @@ class PyomoInterface(object):
             raise Exception("evaluateObj: The dimension is not consistent with the initialization \n")
         self.setVarValue(x=x,y=y,z=z)
         return self.objective()
-
-    def deactiveExtraConObj(self):
-        self.TRF.objCompCheckL.deactivate()
-        self.TRF.romL.deactivate()
-        self.TRF.objCompCheckQ.deactivate()
-        self.TRF.romQ.deactivate()
-        self.objective.activate()
-
-    def activateRomCons(self,x0, rom_params):
-        self.setParam(x0=x0,rom_params=rom_params)
-        if(self.romtype==ROMType.linear):
-            self.TRF.romL.activate()
-        elif(self.romtype==ROMType.quadratic):
-            self.TRF.romQ.activate()
-
-    def activateCompCheckObjective(self, x0, z0, rom_params, penalty):
-        self.setParam(x0=x0,z0=z0,rom_params=rom_params,penaltyComp = penalty)
-        if(self.romtype==ROMType.linear):
-            self.TRF.objCompCheckL.activate()
-        elif(self.romtype==ROMType.quadratic):
-            self.TRF.objCompCheckQ.activate()
-        self.objective.deactivate()
-
-
 
     def solveModel(self, x, y, z):
         model = self.model
@@ -436,7 +361,7 @@ class PyomoInterface(object):
             print("And Termination Conditions: " + str(results.solver.termination_condition))
             return False, 0
 
-    def TRSPk(self, x, y, z, x0, y0, z0, rom_params, radius):
+    def TRSPk(self, x, y, z, x0, y0, z0, rom_params, radius, surrogate_constraints):
 
         if(len(x) != self.lx or len(y) != self.ly or len(z) != self.lz or
                 len(x0) != self.lx or len(y0) != self.ly or len(z0) != self.lz):
@@ -445,12 +370,19 @@ class PyomoInterface(object):
 
         self.setBound(x0, y0, z0, radius)
         self.setVarValue(x, y, z)
-        self.deactiveExtraConObj()
-        self.activateRomCons(x0, rom_params)
 
-        return self.solveModel(x, y, z)
+        # Add constraints to system, activate objective, solve problem, delete constraint after solving
+        def consROM(model, i):
+            return  surrogate_constraints[i] == 0
+        self.model.surr_constraints = Constraint(self.TRF.ind_ly, rule=consROM)
 
-    def compatibilityCheck(self, x, y, z, x0, y0, z0, rom_params, radius, penalty):
+        self.objective.activate()
+
+        flag, obj = self.solveModel(x, y, z)
+        del self.model.surr_constraints
+        return flag, obj
+
+    def compatibilityCheck(self, x, y, z, x0, y0, z0, rom_params, radius, penalty, surrogate_objective):
         if(len(x) != self.lx or len(y) != self.ly or len(z) != self.lz or
                 len(x0) != self.lx or len(y0) != self.ly or len(z0) != self.lz):
             raise Exception(
@@ -458,20 +390,27 @@ class PyomoInterface(object):
 
         self.setBound(x0, y0, z0, radius)
         self.setVarValue(x, y, z)
-        self.deactiveExtraConObj()
-        self.activateCompCheckObjective(x0, z0, rom_params, penalty)
+        # Deactivate original objective, activate surrogate objective, solve problem, remove objective after solving
+        self.objective.deactivate()
+        self.model.obfunc = Objective(expr=surrogate_objective)
         #self.deactiveExtraConObj()
         #self.model.pprint()
-        return self.solveModel(x, y, z)
+        flag, obj = self.solveModel(x, y, z)
+        del self.model.obfunc
+        return flag, obj
 
-    def criticalityCheck(self, x, y, z, rom_params, worstcase=False, M=[0.0]):
+    def criticalityCheck(self, x, y, z, rom_params, surrogate_constraints, worstcase=False, M=[0.0]):
 
         model = self.model
 
         self.setVarValue(x=x,y=y,z=z)
         self.setBound(x, y, z, 1e10)
-        self.deactiveExtraConObj()
-        self.activateRomCons(x, rom_params)
+
+        # Activate objective and create constraints
+        self.objective.activate()
+        def consROM(model, i):
+            return  surrogate_constraints[i] == 0
+        self.model.surr_constraints = Constraint(self.TRF.ind_ly, rule=consROM)
 
         optGJH = SolverFactory('contrib.gjh')
         optGJH.solve(model, tee=False, symbolic_solver_labels=True)
@@ -547,6 +486,8 @@ class PyomoInterface(object):
         results = opt.solve(
             l, keepfiles=self.keepfiles, tee=self.stream_solver)
 
+        del self.model.surr_constraints
+
         if ((results.solver.status == SolverStatus.ok)
                 and (results.solver.termination_condition == TerminationCondition.optimal)):
             l.solutions.load_from(results)
@@ -560,12 +501,16 @@ class PyomoInterface(object):
             return False, infinity
 
 
-
-
     ####################### Build ROM ####################
 
-    def initialQuad(self, lx):
-        _, self.pset, self.geoM = generate_quadratic_rom_geometry(lx)
+    def surrogate_obj_constraints(self, ly, surr_eqs):
+        surr_obj = 0
+        surr_con = []
+        model = self.TRF
+        for i in range(0, self.ly):
+            surr_obj += (surr_eqs[i][0] - model.y[i + 1]) ** 2
+            surr_con.append(model.y[i + 1] - surr_eqs[i][0])
+        return surr_obj, surr_con
 
     def buildROM(self, x, radius_base):
         """
@@ -577,49 +522,98 @@ class PyomoInterface(object):
         y1 = self.evaluateDx(x)
         rom_params = []
 
-        if(self.romtype==ROMType.linear):
-            for i in range(0, self.ly):
-                rom_params.append([])
-                rom_params[i].append(y1[i])
+        if(self.romtype==ROMType.linear or self.romtype==ROMType.quadratic or self.romtype==ROMType.kriging):
+                # Trap all print to screens from sampling and PR scripts
+                text_trap = io.StringIO()
+                sys.stdout = text_trap
 
-                # Check if it works with Ampl
-                fcn  =  self.TRF.external_fcns[i]._fcn
-                values = [];
-                for j in self.exfn_xvars_ind[i]:
-                    values.append(x[j])
+                # Create samples
+                radius = radius_base  # * scale[j]
+                x_lo = x - radius
+                x_up = x + radius
 
-                for j in range(0, len(values)):
-                    radius = radius_base # * scale[j]
-                    values[j] = values[j] + radius
-                    y2 = fcn._fcn(*values)
-                    rom_params[i].append((y2 - y1[i]) / radius)
-                    values[j] = values[j] - radius
+                list_of_surrogates = [] # Will contain the surrogate parameters
+                y_surrogates = [] # Will contain the output predictions from the surrogates when required
+                surrogate_expressions = []  # Will contain the list of surrogate expressions
 
-        elif(self.romtype==ROMType.quadratic):
-            #Quad ROM
-            # basis = [1, x1, x2,..., xn, x1x1, x1x2,x1x3,...,x1xn,x2x2,x2x3,...,xnxn]
-            if self.geoM is None:
-                self.initialQuad(self.lx)
 
-            dim = int((self.lx*self.lx+self.lx*3)/2. + 1)
-            rhs=[]
-            radius = radius_base #*np.array(scale)
-            for p in self.pset[:-1]:
-                y = self.evaluateDx(x+radius*p)
-                rhs.append(y)
-            rhs.append(y1)
+                # For all external functions (verify!):
+                for k in range(0, self.ly):
+                    surrogate_expressions.append([])
+                    x_rel = []
+                    x_lo_rel = []
+                    x_up_rel = []
+                    for j in range(0, len(self.exfn_xvars_ind[k])):
+                        x_rel.append(x[self.exfn_xvars_ind[k][j]])
+                        x_lo_rel.append(x_lo[self.exfn_xvars_ind[k][j]])
+                        x_up_rel.append(x_up[self.exfn_xvars_ind[k][j]])
+                    x_bounds = [x_lo_rel, x_up_rel]
+                    region_sampling = sampling.LatinHypercubeSampling(x_bounds, number_of_samples=17, sampling_type="creation")  # random number of samples
+                    values = region_sampling.sample_points()
+                    x_rel = np.array(x_rel)
+                    values = np.concatenate((x_rel.reshape(1, x_rel.shape[0]), values), axis=0)
 
-            coefs = np.linalg.solve(self.geoM,np.matrix(rhs))
-            for i in range(0, self.ly):
-                rom_params.append([])
-                for j in range(0, dim):
-                    rom_params[i].append(coefs[j,i])
-                for j in range(1, self.lx+1):
-                    rom_params[i][j]=rom_params[i][j]/radius#/radius[j-1]
-                count = self.lx+1
-                for ii in range(0, self.lx):
-                    for j in range(ii, self.lx):
-                        rom_params[i][count]=rom_params[i][count]/radius#/radius[ii]/radius[j]
-                        count = count + 1
+                    # b. generate output from actual function
+                    fcn = self.TRF.external_fcns[k]._fcn
+                    y_samples = []
+                    for j in range(0, values.shape[0]):
+                        y_samples.append(fcn._fcn(*values[j, :]))
+                    y_samples = np.array(y_samples)
+                    if y_samples.ndim == 1:
+                        y_samples = y_samples.reshape(len(y_samples), 1)
 
-        return rom_params, y1
+                    # c. Generate a surrogate for each output and store in list_of_surrogates
+                    number_bb_outputs = y_samples.shape[1]
+                    for i in range(0, number_bb_outputs):
+                        surrogate_predictions = []
+                        training_samples = np.concatenate((values, y_samples[:, i].reshape(y_samples.shape[0], 1)), axis=1)
+
+                        # Generate pyomo equations: collect index of terms in indx, collect terms from xvars, then generate expression
+                        indx = self.exfn_xvars_ind[k]
+                        surr_vars = []
+                        for p in range(0, len(indx)):
+                            surr_vars.append(self.TRF.xvars[indx[p]])
+
+                        if self.romtype==ROMType.linear:
+                            call_surrogate_method = polynomial_regression.PolynomialRegression(training_samples, training_samples, maximum_polynomial_order=1, multinomials=0, number_of_crossvalidations=3, solution_method="mle", training_split=0.9)
+                            p = call_surrogate_method.get_feature_vector()
+                            call_surrogate_method.set_additional_terms([])
+                            results = call_surrogate_method.fit_surrogate()
+                            surrogate_expressions[k].append(results.generate_expression(surr_vars))
+                            list_of_surrogates.append(results.optimal_weights_array.flatten().tolist())
+                        elif self.romtype==ROMType.quadratic:
+                            call_surrogate_method = polynomial_regression.PolynomialRegression(training_samples, training_samples, maximum_polynomial_order=2, multinomials=1, number_of_crossvalidations=3, solution_method="mle", training_split=0.9)
+                            p = call_surrogate_method.get_feature_vector()
+                            call_surrogate_method.set_additional_terms([])
+                            results = call_surrogate_method.fit_surrogate()
+                            surrogate_expressions[k].append(results.generate_expression(surr_vars))
+                            if results.polynomial_order==1:
+                                no_comb_terms = int(
+                                    0.5 * len(self.exfn_xvars_ind[k]) * (len(self.exfn_xvars_ind[k]) - 1))
+                                adjusted_vec_coeffs = np.zeros((1 + 2 * len(self.exfn_xvars_ind[k]) + no_comb_terms, 1))
+                                adjusted_vec_coeffs[0, 0] = results.optimal_weights_array[0, 0]
+                                adjusted_vec_coeffs[1:len(self.exfn_xvars_ind[k]) + 1,
+                                0] = results.optimal_weights_array[1:len(self.exfn_xvars_ind[k]) + 1, 0]
+                                adjusted_vec_coeffs[-no_comb_terms:, 0] = results.optimal_weights_array[-no_comb_terms:, 0]
+                                list_of_surrogates.append(adjusted_vec_coeffs.flatten().tolist())
+                            else:
+                                list_of_surrogates.append(results.optimal_weights_array.flatten().tolist())
+                        elif self.romtype==ROMType.kriging:
+                            call_surrogate_method = kriging.KrigingModel(training_samples)
+                            p = call_surrogate_method.get_feature_vector()
+                            results = call_surrogate_method.kriging_training()
+                            surrogate_expressions[k].append(results.kriging_generate_expression(surr_vars))
+                            list_of_surrogates.append(results.optimal_weights.flatten().tolist())
+
+                    #y_surrogates.append(surrogate_predictions)
+
+
+                    # Return in form of the original ROM function
+                    rom_params = list_of_surrogates
+                # End text trap
+                sys.stdout = sys.__stdout__
+                # if self.romtype==ROMType.kriging:
+                #     print(results.training_R2, '\n', results.kriging_generate_expression(surr_vars), '\n', results.optimal_weights, results.regularization_parameter)
+
+        surrogate_objective, surrogate_constraints = self.surrogate_obj_constraints(self.ly, surrogate_expressions)
+        return rom_params, surrogate_objective, surrogate_constraints, y1

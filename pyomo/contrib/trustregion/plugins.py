@@ -66,7 +66,7 @@ class TrustRegionSolver(OptSolver):
 
     # Initialize trust radius
     CONFIG.declare('trust radius', ConfigValue(
-        default = 1.0,
+        default = 20,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -100,7 +100,7 @@ class TrustRegionSolver(OptSolver):
 
     # Termination tolerances
     CONFIG.declare('ep i', ConfigValue(
-        default = 1e-5,
+        default = 1e-6,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -124,7 +124,7 @@ class TrustRegionSolver(OptSolver):
         doc = ''))
 
     CONFIG.declare('max it', ConfigValue(
-        default = 20,
+        default = 6000,
         domain = PositiveInt,
         description = '',
         doc = ''))
@@ -162,7 +162,7 @@ class TrustRegionSolver(OptSolver):
 
     # Criticality Check Parameters
     CONFIG.declare('criticality check', ConfigValue(
-        default = 0.1,
+        default = 0.01,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -226,7 +226,7 @@ class TrustRegionSolver(OptSolver):
         doc = ''))
 
     CONFIG.declare('eta2', ConfigValue(
-        default = 0.2,
+        default = 0.75,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -248,8 +248,8 @@ class TrustRegionSolver(OptSolver):
     # Default romtype
     CONFIG.declare('reduced model type', ConfigValue(
         default = 1,
-        domain = In([0,1]),
-        description = '0 = Linear, 1 = Quadratic',
+        domain = In([0,1,2]),
+        description = '0 = Linear, 1 = Quadratic, 2 = Kriging',
         doc = ''))
 
     def __init__(self, **kwds):

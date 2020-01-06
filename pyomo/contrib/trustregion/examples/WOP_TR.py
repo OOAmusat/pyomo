@@ -111,7 +111,7 @@ model.rs_c1 = Constraint(model.i, rule=recycle_eval, doc='Define recycle stream'
 model.ROI = Objective(
     expr= -((2207 * model.F['p'] + 50 * model.F_purge - 168 * model.F['a'] - 252 * model.F['b'] - 2.22 * model.F_sum_eff - 84 * model.F['g'] - 60 * model.V * model.rho) / (6 * model.V *  model.rho)), sense=minimize
                       )
-
+model.pprint()
 instance = model
 optTRF = SolverFactory('trustregion')
 result = optTRF.solve(instance, [bb_1, bb_2, bb_3])

@@ -29,6 +29,6 @@ class Filter:
         if (x.infeasible > theta_max):
             return False
         for i in self.filteR:
-            if (i.compare(x) == -1):
+            if (i.compare(x) == -1): # Only return false if both the objective and the infeasibility are worse
                 return False
         return True

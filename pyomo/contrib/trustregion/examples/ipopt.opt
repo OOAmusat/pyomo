@@ -1,4 +1,4 @@
-linear_solver mumps
+linear_solver ma27
 max_iter 10000
 tol 1e-7
 bound_frac 1e-6

@@ -66,7 +66,7 @@ class TrustRegionSolver(OptSolver):
 
     # Initialize trust radius
     CONFIG.declare('trust radius', ConfigValue(
-        default = 20,
+        default = 1,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -100,7 +100,7 @@ class TrustRegionSolver(OptSolver):
 
     # Termination tolerances
     CONFIG.declare('ep i', ConfigValue(
-        default = 1e-6,
+        default = 1e-5,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -124,7 +124,7 @@ class TrustRegionSolver(OptSolver):
         doc = ''))
 
     CONFIG.declare('max it', ConfigValue(
-        default = 6000,
+        default = 20,
         domain = PositiveInt,
         description = '',
         doc = ''))
@@ -162,7 +162,7 @@ class TrustRegionSolver(OptSolver):
 
     # Criticality Check Parameters
     CONFIG.declare('criticality check', ConfigValue(
-        default = 0.01,
+        default = 0.1,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -207,7 +207,7 @@ class TrustRegionSolver(OptSolver):
         doc = ''))
 
     CONFIG.declare('gamma theta', ConfigValue(
-        default = 0.01,
+        default =  0.01,
         domain = PositiveFloat,
         description = 'gamma_f and gamma_theta in (0,1) are fixed parameters',
         doc = ''))
@@ -226,7 +226,7 @@ class TrustRegionSolver(OptSolver):
         doc = ''))
 
     CONFIG.declare('eta2', ConfigValue(
-        default = 0.75,
+        default = 0.2,
         domain = PositiveFloat,
         description = '',
         doc = ''))
@@ -248,8 +248,15 @@ class TrustRegionSolver(OptSolver):
     # Default romtype
     CONFIG.declare('reduced model type', ConfigValue(
         default = 1,
-        domain = In([0,1,2]),
-        description = '0 = Linear, 1 = Quadratic, 2 = Kriging',
+        domain = In([0,1,2,3,4]),
+        description = '0 = Linear interpolation, 1 = Linear regression w/o interaction terms, 2 = Linear regression with interaction terms, 3 = Quadratic, 4 = Kriging',
+        doc = ''))
+    
+    # Filter on/off flag
+    CONFIG.declare('filter flag', ConfigValue(
+        default = True,
+        domain = bool,
+        description = 'Flage controlling filter on/off',
         doc = ''))
 
     def __init__(self, **kwds):

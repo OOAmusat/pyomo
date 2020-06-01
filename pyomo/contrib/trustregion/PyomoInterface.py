@@ -11,27 +11,18 @@ from pyomo.core.base.external import PythonCallbackFunction
 from pyomo.core.base.var import _VarData
 from pyomo.core.base.numvalue import nonpyomo_leaf_types
 from pyomo.opt import SolverFactory, SolverStatus, TerminationCondition
-from pyomo.contrib.trustregion.GeometryGenerator import (
-    generate_quadratic_rom_geometry
-)
 from pyomo.contrib.trustregion.helper import *
-import sys
-import io
-from pyomo.contrib.surrogates import sampling, polynomial_regression, kriging
 
-# To be deleted when git commit is done
-# mydir = 'C:\\Users\\OOAmusat\\PycharmProjects\\WorkProjects\\kriging'
-# newdir = os.path.abspath(os.path.join(mydir, '..'))
-# sys.path.append(newdir)
-# from kriging import kriging_hybrid as kriging
-#
 
 logger = logging.getLogger('pyomo.contrib.trustregion')
 
 class ROMType:
-    linear = 0
-    quadratic = 1
-    kriging = 2
+    interpolation = 0
+    linear0 = 1
+    linear1 = 2
+    quadratic = 3
+    kriging = 4
+
 
 class ReplaceEFVisitor(EXPR.ExpressionReplacementVisitor):
     def __init__(self, trf_block, efSet):
@@ -112,7 +103,7 @@ class PyomoInterface(object):
     stream_solver = False # True prints solver output to screen
     keepfiles = False  # True prints intermediate file names (.nl,.sol,...)
     countDx = -1
-    romtype = ROMType.linear
+    romtype = ROMType.interpolation # moved inside __init__
 
     def __init__(self, m, eflist, config):
 
@@ -129,6 +120,8 @@ class PyomoInterface(object):
 
         self.geoM = None
         self.pset = None
+
+        # self.romtype = config.reduced_model_type
 
 
     def substituteEF(self, expr, trf, efSet):
@@ -161,7 +154,7 @@ class PyomoInterface(object):
         TRF = Block()
 
         # Get all varibles
-        seenVar = set()
+        seenVar = Set()
         allVariables = []
         for var in model.component_data_objects(Var):
             if id(var) not in seenVar:
@@ -195,7 +188,7 @@ class PyomoInterface(object):
         # xvars and zvars are lists of x and z varibles as in the paper
         TRF.xvars = []
         TRF.zvars = []
-        seenVar = set()
+        seenVar = Set()
         for varss in TRF.exfn_xvars:
             for var in varss:
                 if id(var) not in seenVar:
@@ -231,7 +224,6 @@ class PyomoInterface(object):
     #         conobj.activate()
 
     #     self.model.del_component(self.model.tR)
-
 
     def getInitialValue(self):
         x = np.zeros(self.lx, dtype=float)
@@ -499,121 +491,3 @@ class PyomoInterface(object):
             print("Waring: Crticality check fails with solver Status: " + str(results.solver.status))
             print("And Termination Conditions: " + str(results.solver.termination_condition))
             return False, infinity
-
-
-    ####################### Build ROM ####################
-
-    def surrogate_obj_constraints(self, ly, surr_eqs):
-        surr_obj = 0
-        surr_con = []
-        model = self.TRF
-        for i in range(0, self.ly):
-            surr_obj += (surr_eqs[i][0] - model.y[i + 1]) ** 2
-            surr_con.append(model.y[i + 1] - surr_eqs[i][0])
-        return surr_obj, surr_con
-
-    def buildROM(self, x, radius_base):
-        """
-        This function builds a linear ROM near x based on the perturbation.
-        The ROM is returned by a format of params array.
-        I think the evaluate count is broken here!
-        """
-
-        y1 = self.evaluateDx(x)
-        rom_params = []
-
-        if(self.romtype==ROMType.linear or self.romtype==ROMType.quadratic or self.romtype==ROMType.kriging):
-                # Trap all print to screens from sampling and PR scripts
-                text_trap = io.StringIO()
-                sys.stdout = text_trap
-
-                # Create samples
-                radius = radius_base  # * scale[j]
-                x_lo = x - radius
-                x_up = x + radius
-
-                list_of_surrogates = [] # Will contain the surrogate parameters
-                y_surrogates = [] # Will contain the output predictions from the surrogates when required
-                surrogate_expressions = []  # Will contain the list of surrogate expressions
-
-
-                # For all external functions (verify!):
-                for k in range(0, self.ly):
-                    surrogate_expressions.append([])
-                    x_rel = []
-                    x_lo_rel = []
-                    x_up_rel = []
-                    for j in range(0, len(self.exfn_xvars_ind[k])):
-                        x_rel.append(x[self.exfn_xvars_ind[k][j]])
-                        x_lo_rel.append(x_lo[self.exfn_xvars_ind[k][j]])
-                        x_up_rel.append(x_up[self.exfn_xvars_ind[k][j]])
-                    x_bounds = [x_lo_rel, x_up_rel]
-                    region_sampling = sampling.LatinHypercubeSampling(x_bounds, number_of_samples=17, sampling_type="creation")  # random number of samples
-                    values = region_sampling.sample_points()
-                    x_rel = np.array(x_rel)
-                    values = np.concatenate((x_rel.reshape(1, x_rel.shape[0]), values), axis=0)
-
-                    # b. generate output from actual function
-                    fcn = self.TRF.external_fcns[k]._fcn
-                    y_samples = []
-                    for j in range(0, values.shape[0]):
-                        y_samples.append(fcn._fcn(*values[j, :]))
-                    y_samples = np.array(y_samples)
-                    if y_samples.ndim == 1:
-                        y_samples = y_samples.reshape(len(y_samples), 1)
-
-                    # c. Generate a surrogate for each output and store in list_of_surrogates
-                    number_bb_outputs = y_samples.shape[1]
-                    for i in range(0, number_bb_outputs):
-                        surrogate_predictions = []
-                        training_samples = np.concatenate((values, y_samples[:, i].reshape(y_samples.shape[0], 1)), axis=1)
-
-                        # Generate pyomo equations: collect index of terms in indx, collect terms from xvars, then generate expression
-                        indx = self.exfn_xvars_ind[k]
-                        surr_vars = []
-                        for p in range(0, len(indx)):
-                            surr_vars.append(self.TRF.xvars[indx[p]])
-
-                        if self.romtype==ROMType.linear:
-                            call_surrogate_method = polynomial_regression.PolynomialRegression(training_samples, training_samples, maximum_polynomial_order=1, multinomials=0, number_of_crossvalidations=3, solution_method="mle", training_split=0.9)
-                            p = call_surrogate_method.get_feature_vector()
-                            call_surrogate_method.set_additional_terms([])
-                            results = call_surrogate_method.fit_surrogate()
-                            surrogate_expressions[k].append(results.generate_expression(surr_vars))
-                            list_of_surrogates.append(results.optimal_weights_array.flatten().tolist())
-                        elif self.romtype==ROMType.quadratic:
-                            call_surrogate_method = polynomial_regression.PolynomialRegression(training_samples, training_samples, maximum_polynomial_order=2, multinomials=1, number_of_crossvalidations=3, solution_method="mle", training_split=0.9)
-                            p = call_surrogate_method.get_feature_vector()
-                            call_surrogate_method.set_additional_terms([])
-                            results = call_surrogate_method.fit_surrogate()
-                            surrogate_expressions[k].append(results.generate_expression(surr_vars))
-                            if results.polynomial_order==1:
-                                no_comb_terms = int(
-                                    0.5 * len(self.exfn_xvars_ind[k]) * (len(self.exfn_xvars_ind[k]) - 1))
-                                adjusted_vec_coeffs = np.zeros((1 + 2 * len(self.exfn_xvars_ind[k]) + no_comb_terms, 1))
-                                adjusted_vec_coeffs[0, 0] = results.optimal_weights_array[0, 0]
-                                adjusted_vec_coeffs[1:len(self.exfn_xvars_ind[k]) + 1,
-                                0] = results.optimal_weights_array[1:len(self.exfn_xvars_ind[k]) + 1, 0]
-                                adjusted_vec_coeffs[-no_comb_terms:, 0] = results.optimal_weights_array[-no_comb_terms:, 0]
-                                list_of_surrogates.append(adjusted_vec_coeffs.flatten().tolist())
-                            else:
-                                list_of_surrogates.append(results.optimal_weights_array.flatten().tolist())
-                        elif self.romtype==ROMType.kriging:
-                            call_surrogate_method = kriging.KrigingModel(training_samples)
-                            p = call_surrogate_method.get_feature_vector()
-                            results = call_surrogate_method.kriging_training()
-                            surrogate_expressions[k].append(results.kriging_generate_expression(surr_vars))
-                            list_of_surrogates.append(results.optimal_weights.flatten().tolist())
-
-                    #y_surrogates.append(surrogate_predictions)
-
-
-                    # Return in form of the original ROM function
-                    rom_params = list_of_surrogates
-                # End text trap
-                sys.stdout = sys.__stdout__
-                # if self.romtype==ROMType.kriging:
-                #     print(results.training_R2, '\n', results.kriging_generate_expression(surr_vars), '\n', results.optimal_weights, results.regularization_parameter)
-
-        surrogate_objective, surrogate_constraints = self.surrogate_obj_constraints(self.ly, surrogate_expressions)
-        return rom_params, surrogate_objective, surrogate_constraints, y1
